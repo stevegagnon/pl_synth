@@ -662,7 +662,7 @@
 	</style>
 </head>
 <body>
-<script type="text/javascript" src="release/pl_synth_wasm.min.js"></script>
+<script type="text/javascript" src="js/pl_synth_p.js"></script>
 <script type="text/javascript">
 
 // -----------------------------------------------------------------------------
@@ -3518,18 +3518,23 @@ class Piano extends HTMLComponent {
 
 let audioContext = new (window.webkitAudioContext||window.AudioContext)();
 
-pl_synth_wasm_init(audioContext, (synth) => {
-	window.app = new SynthApp(document.body, audioContext, synth);
+// pl_synth_wasm_init(audioContext, (synth) => {
+// 	window.app = new SynthApp(document.body, audioContext, synth);
 
-	// Attempt to load song from fraction part of the URL
+// 	// Attempt to load song from fraction part of the URL
+// 	let hash = document.location.hash.replace('#', '');
+// 	if (hash.length) {
+// 		decompress(hash, (decompressed) => window.app.loadText(decompressed));
+// 	}
+// });
+
+// When Using the non-wasm version
+window.app = new SynthApp(document.body, audioContext, pl_synth_init(audioContext));
+
 	let hash = document.location.hash.replace('#', '');
 	if (hash.length) {
 		decompress(hash, (decompressed) => window.app.loadText(decompressed));
 	}
-});
-
-// When Using the non-wasm version
-// window.app = new SynthApp(document.body, audioContext, pl_synth_init(audioContext));
 
 
 </script>

@@ -191,10 +191,8 @@ let pl_synth_init = (ctx) => {
 			track_samples_l = new Float32Array(num_samples),
 			track_samples_r = new Float32Array(num_samples);
 
-		for (let track of tracks) {
+		for (let [instrument, sequence, patterns] of tracks) {
 			let 
-				instrument = track[0/*instrument*/],
-				sequence = track[1/*sequence*/],
 				write_pos = 0,
 				first = num_samples;
 
@@ -203,7 +201,7 @@ let pl_synth_init = (ctx) => {
 
 			for (let pi of sequence) {
 				for (let row = 0; row < 32; row++) {
-					let note = track[2/*patterns*/][pi-1]?.[row];
+					let note = patterns[pi-1]?.[row];
 					if (note) {
 						first = Math.min(first, write_pos);
 						generate(row_len, note, track_samples_l, track_samples_r, write_pos, ...instrument);
