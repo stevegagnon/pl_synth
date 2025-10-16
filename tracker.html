@@ -1119,8 +1119,6 @@ class SynthApp {
 	focused = null;
 
 	indicator = null;
-	playingSources = [];
-	stopableSource = null;
 
 	clipboard = null;
 	playhead = null;
@@ -1128,9 +1126,12 @@ class SynthApp {
 
 	defaultBPM = 120;
 
-	constructor(parent, audioContext, synth) {
+	trackSynths = [];
+	synthTime = 0;
+	playStartTime = 0;
+
+	constructor(parent, audioContext) {
 		this.ctx = audioContext;
-		this.synth = synth;
 		this.history = new History(100, 500, () => this.getJson(), (data) => this.setJson(data));
 		this.log = new OutputLog();
 		this.piano = new Piano(this);
@@ -1139,7 +1140,10 @@ class SynthApp {
 
 		for (let i = 0; i < this.numTracks; i++) {
 			this.tracks.push(new Track(this, i));
+			this.trackSynths.push(createChannel(this.rowLen, 100_000, this.ctx.sampleRate));
 		}
+
+		this.createScriptProcessor();
 
 		this.element = h('div', {class: 'app'}, 
 			h('div', {class: 'row pane menu'},
@@ -1499,18 +1503,46 @@ class SynthApp {
 			: null;
 	}
 
+	createScriptProcessor() {
+		let processor = this.ctx.createScriptProcessor(4096, 0, 2);
+		processor.addEventListener('audioprocess', (event) => {
+			let out1 = event.outputBuffer.getChannelData(0);
+			let out2 = event.outputBuffer.getChannelData(1);
+
+			for (let channel of this.trackSynths) {
+				const [time] = channel[0](out1, out2, 4096);
+				this.synthTime = time;
+			}
+		});
+		processor.connect(this.ctx.destination);
+		return processor;
+	}
+
+	setChannelInstrument(instrument, channel = 0, timeSincePlayStart = null) {
+		let [render, playNote, cmd] = this.trackSynths[channel];
+
+		let time = timeSincePlayStart !== null ? this.playStartTime + timeSincePlayStart : 0;
+
+		instrument.map((v, i) => cmd([i, v], time));
+	}
+
+	triggerNote(note, channel = 0, timeSincePlayStart = null) {
+		let [render, playNote, cmd] = this.trackSynths[channel];
+
+		let time = timeSincePlayStart !== null ? this.playStartTime + timeSincePlayStart : 0;
+
+		playNote(note, time);
+	}
+
+	changeChannelParam(idx, value, channel = 0) {
+		let [render, playNote, cmd] = this.trackSynths[channel];
+		cmd([idx, value]);
+	}
+
 	createBufferSource(buffer) {
 		let source = this.ctx.createBufferSource();
 		source.buffer = buffer;
 		source.connect(this.ctx.destination);
-		return source;
-	}
-
-	playBuffer(buffer) {
-		this.resumeAudioContext();
-		let source = this.createBufferSource(buffer);
-		source.start();
-		this.playingSources.push(source);
 		return source;
 	}
 
@@ -1531,14 +1563,6 @@ class SynthApp {
 		setTimeout(() => callback(source), 1);
 	}
 
-	sourceEnded(source) {
-		// Removed ended source from currently playing sources
-		this.playingSources = this.playingSources.filter(ps => ps !== source);
-		if (this.stopableSource === source) {
-			this.stopableSource = null;
-		}
-	}
-
 	play() {
 		// Simulate the Spacebar keydown event; to be handled in the active
 		// element or globally in SynthApp.
@@ -1551,25 +1575,10 @@ class SynthApp {
 		this.playhead = null;
 		this.meter.stop();
 		this.indicator.classList.remove('playing');
-
-		if (this.stopableSource) {
-			if (!this.stopableSource.ended) {
-				this.stopableSource.stop();
-			}
-			this.stopableSource = null;
-		}
 	}
 
 	terminate() {
 		this.stop();
-
-		// Hard stop all playing sources immediately
-		for (let source of this.playingSources) {
-			if (!source.ended) {
-				source.stop();
-			}
-		}
-		this.playingSources = [];
 	}
 
 	softStop() {
@@ -1578,11 +1587,10 @@ class SynthApp {
 		this.playhead = null;
 		this.meter.stop();
 		this.indicator.classList.remove('playing');
-		this.stopableSource = null;
 	}
 
 	togglePlayPattern(trackIndex, patternIndex, start, end) {
-		if (this.stopableSource) {
+		if (this.playhead) {
 			this.stop();
 		}
 		else {
@@ -1603,25 +1611,16 @@ class SynthApp {
 		this.log.write('generating pattern');
 		let time = Date.now();
 
-		setTimeout(() => {
-			this.createSongSource(song, (source) => {
-				this.log.write(source.buffer.getChannelData(0).length + ' samples in ' + (Date.now()-time)+'ms');
+		this.playStartTime = this.synthTime;
 
-				source.addEventListener('ended', ev => this.sourceEnded(source));
-				this.playingSources.push(source);
-				this.stopableSource = source;
-
-				this.playhead = new PlayheadPattern(this, source, pattern, start, end, patternData);
-				this.playhead.onPlayedThrough = this.softStop.bind(this);
-				this.indicator.classList.add('playing');
-				this.meter.start(source);
-				source.start();
-			});
-		}, 1);
+		this.playhead = new PlayheadPattern(this, pattern, start, end, patternData);
+		this.playhead.onPlayedThrough = this.softStop.bind(this);
+		this.indicator.classList.add('playing');
+		this.meter.start(this.playhead);
 	}
 
 	togglePlaySong(sx, ex, sy, ey) {
-		if (this.stopableSource) {
+		if (this.playhead) {
 			this.stop();
 		}
 		else {
@@ -1650,21 +1649,17 @@ class SynthApp {
 		this.log.write('generating song');
 		let time = Date.now();
 
-		setTimeout(() => {
-			this.createSongSource(song, (source) => {
-				this.log.write(source.buffer.getChannelData(0).length + ' samples in ' + (Date.now()-time)+'ms');
+		this.playStartTime = this.synthTime;
 
-				source.addEventListener('ended', ev => this.sourceEnded(source));
-				this.playingSources.push(source);
-				this.stopableSource = source;
+		for (let i = 0; i < song[1/*tracks*/].length; i++) {
+			let track = song[1/*tracks*/][i];
+			this.setChannelInstrument(track[0/*instrument*/], i);
+		}
 
-				this.playhead = new PlayheadSong(this, source, sx, ex, sy, ey, song);
-				this.playhead.onPlayedThrough = this.softStop.bind(this);
-				this.indicator.classList.add('playing');
-				this.meter.start(source);
-				source.start();
-			});
-		}, 1);
+		this.playhead = new PlayheadSong(this, sx, ex, sy, ey, song);
+		this.playhead.onPlayedThrough = this.softStop.bind(this);
+		this.indicator.classList.add('playing');
+		this.meter.start(this.playhead);
 	}
 
 	setActiveTrack(index) {
@@ -1750,8 +1745,6 @@ class Meter extends HTMLComponent {
 	height = 24;
 	startTime = 0;
 	app = null;
-	samplesLeft = null;
-	samplesRight = null;
 	softMaxLeft = 0;
 	softMaxRight = 0;
 	softOverflowLeft = 0;
@@ -1766,8 +1759,6 @@ class Meter extends HTMLComponent {
 	}
 
 	start(audio) {
-		this.samplesLeft = audio.buffer.getChannelData(0);
-		this.samplesRight = audio.buffer.getChannelData(1);
 		this.startTime = app.ctx.currentTime;
 		this.lastTime = this.startTime;
 		this.softMaxLeft = 0;
@@ -1798,16 +1789,15 @@ class Meter extends HTMLComponent {
 
 		let maxLeft = 0;
 		let maxRight = 0;
-		let samplesLeft = this.samplesLeft;
-		let samplesRight = this.samplesRight;
-		for (let i = start; i < end; i++) {
-			maxLeft = Math.max(maxLeft, Math.abs(samplesLeft[i]));
-			maxRight = Math.max(maxRight, Math.abs(samplesRight[i]));
-		}
 
-		let overflow = Math.max(maxLeft, maxRight) > 1;
-		maxLeft = Math.sqrt(maxLeft);
-		maxRight = Math.sqrt(maxRight);
+		// for (let i = start; i < end; i++) {
+		// 	maxLeft = Math.max(maxLeft, Math.abs(samplesLeft[i]));
+		// 	maxRight = Math.max(maxRight, Math.abs(samplesRight[i]));
+		// }
+
+		// let overflow = Math.max(maxLeft, maxRight) > 1;
+		// maxLeft = Math.sqrt(maxLeft);
+		// maxRight = Math.sqrt(maxRight);
 
 		this.softMaxLeft = Math.min(1, Math.max(this.softMaxLeft - diff * 2, maxLeft));
 		this.softMaxRight = Math.min(1, Math.max(this.softMaxRight - diff * 2, maxRight));
@@ -1845,12 +1835,10 @@ class Meter extends HTMLComponent {
 class Playhead {
 	startTime = 0;
 	app = null;
-	audio = null;
 	onPlayedThrough = null;
 
-	constructor(app, audio) {
+	constructor(app) {
 		this.app = app;
-		this.audio = audio;
 		this.startTime = app.ctx.currentTime;
 		window.requestAnimationFrame(this.onRequestAnimationFrame.bind(this));
 	}
@@ -1889,8 +1877,8 @@ class PlayheadSong extends Playhead {
 	ey = 0;
 	lastY = -1;
 
-	constructor(app, audio, sx, ex, sy, ey, songData) {
-		super(app, audio);
+	constructor(app, sx, ex, sy, ey, songData) {
+		super(app);
 		this.songData = songData;
 		this.sx = sx;
 		this.ex = ex;
@@ -1927,6 +1915,12 @@ class PlayheadSong extends Playhead {
 					let pattern = this.app.tracks[i + this.sx].patterns[patternIndex-1];
 					if (pattern) {
 						this.activePatterns.push(pattern);
+						for (let r = 0; r < 32; r++) {
+							let note = pattern.getJson()[r];
+							if (note) {
+								this.app.triggerNote(note, i + this.sx, this.app.rowLen * (row + r));
+							}
+						}
 					}
 				}
 			}
@@ -1969,8 +1963,8 @@ class PlayheadPattern extends Playhead {
 	start = 0;
 	end = 0;
 
-	constructor(app, audio, pattern, start, end, patternData) {
-		super(app, audio);
+	constructor(app, pattern, start, end, patternData) {
+		super(app);
 		this.pattern = pattern;
 		this.start = start;
 		this.end = end;
@@ -3033,7 +3027,7 @@ class Instrument extends HTMLComponent {
 		super();
 
 		this.track = track;
-		this.waveform = new WaveformDisplay(track.app.synth);
+		this.waveform = new WaveformDisplay(this.track.app);
 
 		let waves = [
 			{value: 0, text: 'sin', title: 'Sine Wave'},
@@ -3280,9 +3274,16 @@ class Instrument extends HTMLComponent {
 	}	
 
 	onChange(name, v) {
+		let idx = Instrument.Indices.indexOf(name);
+
 		this.noteCache = {};
-		this.data[Instrument.Indices.indexOf(name)] = v;
+		this.data[idx] = v;
 		this.waveform.render(this.data);
+
+		if (this.track.app) {
+			this.track.app.changeChannelParam(idx, v, this.track.index);
+		}
+
 		this.track.app.history.add('instrument ' + name);
 	}
 
@@ -3305,29 +3306,13 @@ class Instrument extends HTMLComponent {
 		this.waveform.render(this.data);
 	}
 
-	getNoteBuffer(note) {
-		if (!this.track.app.synth) {
+	playNote(note) {
+		if (!this.track.app) {
 			return null;
 		}
 
-		if (!this.noteCache[note]) {
-			let len = 
-				this.data[13/*env_attack*/] + 
-				this.data[14/*env_sustain*/] + 
-				this.data[15/*env_release*/];
-			if (!len) {
-				return null;
-			}
-			this.noteCache[note] = this.track.app.synth.sound(this.data, note, this.track.app.rowLen);
-		}
-		return this.noteCache[note];
-	}
-
-	playNote(note) {
-		let buffer = this.getNoteBuffer(note);
-		if (buffer) {
-			this.track.app.playBuffer(buffer);
-		}
+		this.track.app.setChannelInstrument(this.data, this.track.index);
+		this.track.app.triggerNote(note, this.track.index);
 	}
 }
 
@@ -3336,13 +3321,14 @@ class Instrument extends HTMLComponent {
 // WaveformDisplay
 
 class WaveformDisplay extends HTMLComponent {
-	synth = null;
+	app = null;
 	instrument = null;
 
-	constructor(synth) {
+	constructor(app) {
 		super();
 
-		this.synth = synth;
+		this.app = app;
+
 		this.canvas = h('canvas',  {class: 'waveform'});
 		this.ctx = this.canvas.getContext('2d');
 		this.element = h('div',  {class: 'preview'}, this.canvas);
@@ -3382,16 +3368,21 @@ class WaveformDisplay extends HTMLComponent {
 		// Render instrument without delay
 		this.instrument[20/*fx_delay_time*/] = 0;
 		this.instrument[21/*fx_delay_amt*/] = 0;
+		
+		const [render, playNote, cmd] = createChannel(this.app.rowLen, len, this.app.ctx.sampleRate);
 
-		let buffer = this.synth.sound(this.instrument, 147 /* C-5 */);
-		if (!buffer) {
-			this.isDirty = true;
-			return;
-		}
+		this.instrument.map((v, i) => cmd([i, v]));
+
+		playNote(147 /* C-5 */);
+
+		let samples_l = new Float32Array(len);
+		let samples_r = new Float32Array(len);
+
+		render(samples_l, samples_r, len);
 
 		this.isDirty = false;
 
-		let samples = buffer.getChannelData(0);
+		let samples = samples_l;
 		let w = this.canvas.width;
 		let h = this.canvas.height;
 		let ctx = this.ctx;
@@ -3516,7 +3507,7 @@ class Piano extends HTMLComponent {
 }
 
 
-let audioContext = new (window.webkitAudioContext||window.AudioContext)();
+let audioContext = new (window.webkitAudioContext||window.AudioContext)({ sampleRate: 44100 });
 
 // pl_synth_wasm_init(audioContext, (synth) => {
 // 	window.app = new SynthApp(document.body, audioContext, synth);
@@ -3529,7 +3520,7 @@ let audioContext = new (window.webkitAudioContext||window.AudioContext)();
 // });
 
 // When Using the non-wasm version
-window.app = new SynthApp(document.body, audioContext, pl_synth_init(audioContext));
+window.app = new SynthApp(document.body, audioContext);
 
 	let hash = document.location.hash.replace('#', '');
 	if (hash.length) {
