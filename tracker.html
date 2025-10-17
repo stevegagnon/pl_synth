@@ -1111,8 +1111,8 @@ class SynthApp {
 
 	piano = null;
 	numTracks = 8;
-	bpm = 128;
-	rowLen = 6014;
+	bpm = 120;
+	rowLen = 5513;
 	tracks = [];
 	activeTrack = null;
 	sequencer = null;
@@ -1140,7 +1140,7 @@ class SynthApp {
 
 		for (let i = 0; i < this.numTracks; i++) {
 			this.tracks.push(new Track(this, i));
-			this.trackSynths.push(createChannel(this.rowLen, 100_000, this.ctx.sampleRate));
+			this.trackSynths.push(createChannel(100_000));
 		}
 
 		this.createScriptProcessor();
@@ -1523,7 +1523,7 @@ class SynthApp {
 
 		let time = timeSincePlayStart !== null ? this.playStartTime + timeSincePlayStart : 0;
 
-		instrument.map((v, i) => cmd([i, v], time));
+		instrument.map((v, i) => cmd([i, v, this.rowLen], time));
 	}
 
 	triggerNote(note, channel = 0, timeSincePlayStart = null) {
@@ -1536,7 +1536,7 @@ class SynthApp {
 
 	changeChannelParam(idx, value, channel = 0) {
 		let [render, playNote, cmd] = this.trackSynths[channel];
-		cmd([idx, value]);
+		cmd([idx, value, this.rowLen]);
 	}
 
 	createBufferSource(buffer) {
@@ -3369,9 +3369,9 @@ class WaveformDisplay extends HTMLComponent {
 		this.instrument[20/*fx_delay_time*/] = 0;
 		this.instrument[21/*fx_delay_amt*/] = 0;
 		
-		const [render, playNote, cmd] = createChannel(this.app.rowLen, len, this.app.ctx.sampleRate);
+		const [render, playNote, cmd] = createChannel(len);
 
-		this.instrument.map((v, i) => cmd([i, v]));
+		this.instrument.map((v, i) => cmd([i, v, this.app.rowLen]));
 
 		playNote(147 /* C-5 */);
 
